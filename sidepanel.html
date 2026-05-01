@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Search Assistant</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="header">
+    <div class="header-top">
+      <div id="current-model-label" class="current-model-label">Claude Sonnet 4.6</div>
+      <div class="header-actions">
+        <button
+          id="rerun-btn"
+          class="text-btn"
+          type="button"
+          title="Regenerate"
+          hidden
+        >
+          Retry
+        </button>
+        <button
+          id="settings-btn"
+          class="text-btn"
+          type="button"
+          aria-expanded="false"
+          aria-controls="settings-panel"
+          title="Settings"
+        >
+          Settings
+        </button>
+      </div>
+    </div>
+    <details id="status-details" class="status-details">
+      <summary id="status-summary" class="status-line">Starting…</summary>
+      <div id="status-line" class="status-line-history"></div>
+    </details>
+    <div id="settings-panel" class="settings-panel" hidden>
+      <label class="field-label" for="model-select">Model</label>
+      <select id="model-select">
+        <option value="sonnet">Claude Sonnet 4.6</option>
+        <option value="haiku">Claude Haiku 4.5</option>
+        <option value="kimi">Kimi K2.5</option>
+      </select>
+      <div id="api-key-section" class="api-key-section">
+        <label class="field-label" for="api-key-input">API Key</label>
+        <div class="api-key-row">
+          <input type="password" id="api-key-input" placeholder="Amazon Bedrock API key" />
+        </div>
+      </div>
+      <div class="api-key-section">
+        <label class="field-label" for="notion-api-key-input">Notion API Key</label>
+        <div class="api-key-row">
+          <input type="password" id="notion-api-key-input" placeholder="Notion integration token" />
+        </div>
+      </div>
+      <div class="api-key-section">
+        <label class="field-label" for="notion-data-source-id-input">Notion Data Source ID</label>
+        <div class="api-key-row">
+          <input type="text" id="notion-data-source-id-input" placeholder="Notion data source ID" />
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button id="save-key-btn">Save settings</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="status" hidden>
+    <span id="status-spinner" class="status-spinner" hidden aria-hidden="true"></span>
+    <span id="status-text"></span>
+    <button id="status-retry-btn" class="status-retry-btn" type="button" hidden>Retry</button>
+  </div>
+  <div id="response" class="response"></div>
+  <div id="inline-status-line" class="status-line inline-status-line" hidden></div>
+  <div id="inline-status" class="status inline-status" hidden>
+    <span id="inline-status-spinner" class="status-spinner" hidden aria-hidden="true"></span>
+    <span id="inline-status-text"></span>
+    <button id="inline-status-retry-btn" class="status-retry-btn" type="button" hidden>Retry</button>
+  </div>
+  <div id="response-actions" class="response-actions" hidden>
+    <button id="ignore-btn" class="text-btn" type="button" hidden>Ignore</button>
+    <button id="applied-btn" class="text-btn applied-btn" type="button" hidden>Applied</button>
+    <button id="analyze-btn" class="primary-btn" type="button">Analyze</button>
+  </div>
+  <div id="usage-summary" class="usage-summary" hidden></div>
+  <form id="chat-form" class="chat-form" hidden>
+    <textarea
+      id="chat-input"
+      class="chat-input"
+      rows="2"
+      placeholder="Ask a follow-up..."
+    ></textarea>
+    <button id="chat-send-btn" class="primary-btn" type="submit">Send</button>
+  </form>
+  <button
+    id="scroll-to-bottom-btn"
+    class="scroll-to-bottom-btn"
+    type="button"
+    hidden
+    title="Jump to latest"
+  >
+    Latest
+  </button>
+
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>
