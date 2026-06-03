@@ -136,7 +136,7 @@ async function saveToNotion(status) {
   if (!actionsReady || saveInProgress) return;
 
   try {
-    const tab = await getActiveTab();
+    const tabId = await requirePanelTabId();
     const notionStatus = status === "Ignore" ? "Ignored" : status;
     const saveMode = saveTarget ? "update" : "create";
     const messageSaveTarget = saveMode === "update" ? saveTarget : null;
@@ -152,7 +152,7 @@ async function saveToNotion(status) {
     chrome.runtime.sendMessage({
       type: "save-to-notion",
       status: notionStatus,
-      tabId: tab.id,
+      tabId,
       saveTarget: messageSaveTarget,
       draft: notionDraft,
     });
@@ -199,11 +199,11 @@ async function triggerAnalysis({ forceFullAnalysis = false, resetStatusHistory =
     rerunBtn.hidden = true;
     showStatus("⏳ Reading page…", { isLoading: true });
 
-    const tab = await getActiveTab();
-    console.log(`🚀 Triggering analysis for tab ${tab.id} with ${modelSelect.value}`);
+    const tabId = await requirePanelTabId();
+    console.log(`🚀 Triggering analysis for tab ${tabId} with ${modelSelect.value}`);
     chrome.runtime.sendMessage({
       type: "analyze-page",
-      tabId: tab.id,
+      tabId,
       model: modelSelect.value,
       requestId: currentRequestId,
       forceFullAnalysis,
@@ -376,7 +376,7 @@ async function handleChatSubmit(event) {
   if (!text) return;
 
   try {
-    const tab = await getActiveTab();
+    const tabId = await requirePanelTabId();
     currentChatRequestId = crypto.randomUUID();
     chatInProgress = true;
     chatInputEl.value = "";
@@ -388,7 +388,7 @@ async function handleChatSubmit(event) {
 
     chrome.runtime.sendMessage({
       type: "chat-message",
-      tabId: tab.id,
+      tabId,
       model: modelSelect.value,
       requestId: currentChatRequestId,
       text,
@@ -403,9 +403,7 @@ async function handleChatSubmit(event) {
 
 async function initialize() {
   try {
-    console.log("🔍 Initializing side panel");
-    const tab = await getActiveTab();
-    currentTabId = tab.id;
+    currentTabId = await requirePanelTabId();
     const { apiKey, selectedModel, notionApiKey, notionDataSourceId } = await chrome.storage.local.get([
       "apiKey",
       "selectedModel",
@@ -540,13 +538,21 @@ function getAnalysisResultStatusText(verdict) {
   return "Analysis ready";
 }
 
-async function getActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) {
-    throw new Error("Could not detect the active tab. Focus a browser tab and retry.");
+function readPanelTabIdFromUrl() {
+  const rawTabId = new URLSearchParams(location.search).get("tabId");
+  if (!rawTabId) return null;
+  const tabId = Number(rawTabId);
+  return Number.isInteger(tabId) && tabId > 0 ? tabId : null;
+}
+
+async function requirePanelTabId() {
+  const tabId = readPanelTabIdFromUrl() ?? currentTabId;
+  if (!tabId) {
+    throw new Error("Could not detect the page tab for this panel.");
   }
-  currentTabId = tab.id;
-  return tab;
+
+  currentTabId = tabId;
+  return tabId;
 }
 
 function getElapsedSeconds() {

@@ -4,25 +4,31 @@ import { estimateCostUsd, MODELS } from "./model-config.js";
 import { createNotionService } from "./notion.js";
 import { renderNotionPreviewMarkdown } from "./notion-draft.js";
 import { readPageText } from "./page-reader.js";
+import { createTabSession } from "./tab-session.js";
 
 const MAX_PAGE_TEXT_LENGTH = 200000;
 const SIDE_PANEL_PATH = "sidepanel.html";
 const PROMPT_PATHS = ["config/prompt.local.md", "config/prompt.example.md"];
 
 const activeByTab = new Map();
-const analysisDraftByTab = new Map();
-const chatContextByTab = new Map();
-const chatHistoryByTab = new Map();
+const tabSession = createTabSession();
 let analysisPrompt = null;
+
+function normalizeTabId(tabId) {
+  const id = Number(tabId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error(`Invalid tab id: ${tabId}`);
+  }
+  return id;
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   const entry = activeByTab.get(tabId);
-  if (!entry) return;
-  entry.controller.abort();
-  activeByTab.delete(tabId);
-  analysisDraftByTab.delete(tabId);
-  chatContextByTab.delete(tabId);
-  chatHistoryByTab.delete(tabId);
+  if (entry) {
+    entry.controller.abort();
+    activeByTab.delete(tabId);
+  }
+  tabSession.clear(tabId).catch((err) => console.error("❌ Failed to clear tab session", err));
 });
 
 initializeSidePanel();
@@ -64,28 +70,33 @@ async function configureExistingTabs() {
 }
 
 function configureTabSidePanel(tabId) {
-  chrome.sidePanel.setOptions({ tabId, path: SIDE_PANEL_PATH, enabled: true }).catch((err) => {
+  chrome.sidePanel.setOptions({ tabId, path: sidePanelPathForTab(tabId), enabled: true }).catch((err) => {
     console.error("Failed to enable side panel for tab", err);
   });
 }
 
+function sidePanelPathForTab(tabId) {
+  return `${SIDE_PANEL_PATH}?tabId=${tabId}`;
+}
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "analyze-page") {
-    startAnalysis(message.tabId, message.model, message.requestId, message.forceFullAnalysis);
+    startAnalysis(normalizeTabId(message.tabId), message.model, message.requestId, message.forceFullAnalysis);
     return;
   }
 
   if (message.type === "save-to-notion") {
-    saveToNotion(message.tabId, message.status, message.saveTarget, message.draft).catch((err) => {
+    saveToNotion(normalizeTabId(message.tabId), message.status, message.saveTarget, message.draft).catch((err) => {
       console.error("❌ Failed to save to Notion:", err);
       safeSendRuntimeMessage({ type: "save-error", tabId: message.tabId, error: err.message });
     });
   }
 
   if (message.type === "chat-message") {
-    continueChat(message.tabId, message.model, message.requestId, message.text).catch((err) => {
+    const tabId = normalizeTabId(message.tabId);
+    continueChat(tabId, message.model, message.requestId, message.text).catch((err) => {
       console.error("❌ Failed to continue chat:", err);
-      safeSendRuntimeMessage({ type: "chat-error", tabId: message.tabId, requestId: message.requestId, error: err.message });
+      safeSendRuntimeMessage({ type: "chat-error", tabId, requestId: message.requestId, error: err.message });
     });
   }
 });
@@ -114,15 +125,17 @@ function isActive(tabId, requestId) {
 }
 
 async function saveToNotion(tabId, status, saveTarget, draftFromMessage) {
-  const service = await createNotionServiceFromStorage();
-  const actionLabel = `${saveTarget?.mode === "update" ? "upd" : "new"}: ${status}`;
-  const tab = await chrome.tabs.get(tabId);
-  const hostname = tab.url ? new URL(tab.url).hostname.replace(/^www\./, "") : "";
-  const draft = analysisDraftByTab.get(tabId) || draftFromMessage;
+  const context = await tabSession.getContext(tabId);
+  const draft = context?.notionDraft || draftFromMessage;
 
   if (!draft) {
     throw new Error("AI Notion fields are not ready. Run analysis first.");
   }
+
+  const service = await createNotionServiceFromStorage();
+  const actionLabel = `${saveTarget?.mode === "update" ? "upd" : "new"}: ${status}`;
+  const tab = await chrome.tabs.get(tabId);
+  const hostname = tab.url ? new URL(tab.url).hostname.replace(/^www\./, "") : "";
 
   console.log(`📋 [${tabId}] save draft:`, draft);
 
@@ -166,7 +179,7 @@ async function analyzePage(tabId, modelKey, requestId, signal) {
     sendAnalysisMessage(tabId, requestId, { type: "progress", text: "⏳ Reading page…" });
     const tab = await chrome.tabs.get(tabId);
     const pageText = (await readPageText(tabId, tab.url)).slice(0, MAX_PAGE_TEXT_LENGTH);
-    chatContextByTab.set(tabId, {
+    await tabSession.initContext(tabId, {
       page: { title: tab.title || "", url: tab.url || "", text: pageText },
       notionJobs: [],
       totalNotionJobs: 0,
@@ -174,8 +187,6 @@ async function analyzePage(tabId, modelKey, requestId, signal) {
       analysisText: "",
       notionDraft: null,
     });
-    chatHistoryByTab.set(tabId, []);
-    analysisDraftByTab.delete(tabId);
     console.log(`📄 [${tabId}] page text: ${pageText.length} chars (+${elapsedMs(tabId)}ms)`);
     console.log(`📄 [${tabId}] page text content:\n`, pageText);
 
@@ -187,7 +198,7 @@ async function analyzePage(tabId, modelKey, requestId, signal) {
     sendAnalysisMessage(tabId, requestId, { type: "progress", text: "🗂️ Checking Notion for matches…" });
     const notionService = await createNotionServiceFromStorage();
     const jobs = await notionService.queryAllJobs();
-    updateChatContext(tabId, { notionJobs: jobs, totalNotionJobs: jobs.length });
+    await updateChatContext(tabId, { notionJobs: jobs, totalNotionJobs: jobs.length });
     console.log(`🗂️ [${tabId}] loaded ${jobs.length} Notion jobs (+${elapsedMs(tabId)}ms)`);
 
     const prompt = await getAnalysisPrompt();
@@ -217,7 +228,7 @@ async function comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, re
       jobs,
       signal,
     });
-    updateChatContext(tabId, { duplicateCheck: result });
+    await updateChatContext(tabId, { duplicateCheck: result });
     console.log(`🔎 [${tabId}] duplicate result: ${result.verdict}, matches: ${result.matches.length}`, result);
 
     sendAnalysisMessage(tabId, requestId, { type: "notion-match-result", verdict: result.verdict });
@@ -288,8 +299,7 @@ async function streamFullAnalysis({ tabId, tab, pageText, model, requestId, sign
   const notionDraft = extraction.fields;
   console.log(`🤖 [${tabId}] AI extracted Notion fields:`, notionDraft);
 
-  analysisDraftByTab.set(tabId, notionDraft);
-  updateChatContext(tabId, { analysisText: text, notionDraft });
+  await updateChatContext(tabId, { analysisText: text, notionDraft });
   sendAnalysisMessage(tabId, requestId, {
     type: "notion-preview",
     draft: notionDraft,
@@ -303,7 +313,7 @@ async function streamFullAnalysis({ tabId, tab, pageText, model, requestId, sign
 }
 
 async function continueChat(tabId, modelKey, requestId, userMessage) {
-  const context = chatContextByTab.get(tabId);
+  const context = await tabSession.getContext(tabId);
   if (!context) {
     safeSendRuntimeMessage({ type: "chat-error", tabId, requestId, error: "Analyze the page before chatting." });
     return;
@@ -318,9 +328,10 @@ async function continueChat(tabId, modelKey, requestId, userMessage) {
   const model = MODELS[modelKey] || MODELS.sonnet;
   const prompt = await getAnalysisPrompt();
   const aiService = createAiService({ apiKey });
-  const messages = chatHistoryByTab.get(tabId) || [];
+  const messages = await tabSession.getHistory(tabId);
   const historyEntry = { role: "user", text: userMessage };
-  chatHistoryByTab.set(tabId, [...messages, historyEntry]);
+  tabSession.setHistory(tabId, [...messages, historyEntry]);
+  await tabSession.save(tabId);
 
   safeSendRuntimeMessage({ type: "chat-start", tabId, requestId });
 
@@ -335,8 +346,8 @@ async function continueChat(tabId, modelKey, requestId, userMessage) {
     },
   });
 
-  const updatedHistory = chatHistoryByTab.get(tabId) || [];
-  chatHistoryByTab.set(tabId, [...updatedHistory, { role: "assistant", text }]);
+  tabSession.setHistory(tabId, [...messages, historyEntry, { role: "assistant", text }]);
+  await tabSession.save(tabId);
 
   safeSendRuntimeMessage({
     type: "chat-complete",
@@ -347,8 +358,8 @@ async function continueChat(tabId, modelKey, requestId, userMessage) {
   });
 }
 
-function updateChatContext(tabId, updates) {
-  chatContextByTab.set(tabId, { ...(chatContextByTab.get(tabId) || {}), ...updates });
+async function updateChatContext(tabId, updates) {
+  await tabSession.persistContextUpdate(tabId, updates);
 }
 
 function compactChatContext(context) {
