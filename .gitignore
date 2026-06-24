@@ -4,3 +4,4 @@ node_modules/
 credentials
 .scripts/
 config/prompt.local.md
+data
