@@ -46,3 +46,4 @@ The extension expects job properties such as:
 ## Permissions
 
 The extension requests `<all_urls>` so it can read visible page text from job pages you analyze. It also needs host access for Amazon Bedrock and Notion API calls.
+
