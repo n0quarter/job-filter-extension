@@ -4,11 +4,7 @@
   "version": "1.0",
   "description": "AI-powered freelance deal flow assistant",
   "permissions": ["activeTab", "sidePanel", "storage", "scripting"],
-  "host_permissions": [
-    "<all_urls>",
-    "https://bedrock-runtime.eu-central-1.amazonaws.com/*",
-    "https://api.notion.com/*"
-  ],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
     "type": "module"

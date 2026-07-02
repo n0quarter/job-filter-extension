@@ -109,10 +109,10 @@ function startAnalysis(tabId, modelKey, requestId, forceFullAnalysis = false) {
   }
 
   const controller = new AbortController();
-  activeByTab.set(tabId, { requestId, controller, startedAt: performance.now(), forceFullAnalysis });
+  activeByTab.set(tabId, { requestId, controller, startedAt: performance.now() });
 
   console.log(`🔍 [${tabId}] analysis start (${modelKey})${forceFullAnalysis ? " [forced]" : ""}`);
-  analyzePage(tabId, modelKey, requestId, controller.signal);
+  analyzePage(tabId, modelKey, requestId, controller.signal, forceFullAnalysis);
 }
 
 function elapsedMs(tabId) {
@@ -146,7 +146,6 @@ async function saveToNotion(tabId, status, saveTarget, draftFromMessage) {
     url: tab.url || "",
     platform: hostname,
     location: draft.location,
-    createdAt: new Date(),
     publishedAt: draft.publishedAt,
     aiSummary: draft.aiSummary,
     fitScore: draft.fitScore,
@@ -155,26 +154,16 @@ async function saveToNotion(tabId, status, saveTarget, draftFromMessage) {
   let job;
   if (saveTarget?.mode === "update" && saveTarget.pageId) {
     console.log(`📝 Updating Notion job ${saveTarget.pageId}`);
-    job = await service.updateJob(saveTarget.pageId, {
-      jobTitle: notionFields.jobTitle,
-      companyName: notionFields.companyName,
-      status: notionFields.status,
-      url: notionFields.url,
-      platform: notionFields.platform,
-      location: notionFields.location,
-      publishedAt: notionFields.publishedAt,
-      aiSummary: notionFields.aiSummary,
-      fitScore: notionFields.fitScore,
-    });
+    job = await service.updateJob(saveTarget.pageId, notionFields);
   } else {
     console.log(`📝 Creating Notion job -> ${status}`);
-    job = await service.createJob(notionFields);
+    job = await service.createJob({ ...notionFields, createdAt: new Date() });
   }
 
-  safeSendRuntimeMessage({ type: "save-success", tabId, status: actionLabel || "Saved", notionUrl: job.notionUrl });
+  safeSendRuntimeMessage({ type: "save-success", tabId, status: actionLabel, notionUrl: job.notionUrl });
 }
 
-async function analyzePage(tabId, modelKey, requestId, signal) {
+async function analyzePage(tabId, modelKey, requestId, signal, forceFullAnalysis) {
   try {
     sendAnalysisMessage(tabId, requestId, { type: "progress", text: "⏳ Reading page…" });
     const tab = await chrome.tabs.get(tabId);
@@ -202,14 +191,14 @@ async function analyzePage(tabId, modelKey, requestId, signal) {
     console.log(`🗂️ [${tabId}] loaded ${jobs.length} Notion jobs (+${elapsedMs(tabId)}ms)`);
 
     const prompt = await getAnalysisPrompt();
-    await comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, requestId, signal, prompt);
+    await comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, requestId, signal, prompt, forceFullAnalysis);
   } catch (err) {
     if (signal.aborted || !isActive(tabId, requestId)) return;
     sendAnalysisMessage(tabId, requestId, { type: "error", error: "Failed to read page: " + err.message });
   }
 }
 
-async function comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, requestId, signal, prompt) {
+async function comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, requestId, signal, prompt, forceFullAnalysis) {
   const { apiKey } = await chrome.storage.local.get("apiKey");
   if (!apiKey) {
     sendAnalysisMessage(tabId, requestId, { type: "error", error: "API key not set. Enter it above." });
@@ -234,7 +223,7 @@ async function comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, re
     sendAnalysisMessage(tabId, requestId, { type: "notion-match-result", verdict: result.verdict });
 
     const autoAnalyze = result.verdict === "new" || result.verdict === "uncertain";
-    if (autoAnalyze || messageForcesFullAnalysis(requestId, signal)) {
+    if (autoAnalyze || forceFullAnalysis) {
       if (result.verdict === "uncertain") {
         sendAnalysisMessage(tabId, requestId, {
           type: "analysis-result",
@@ -333,29 +322,40 @@ async function continueChat(tabId, modelKey, requestId, userMessage) {
   tabSession.setHistory(tabId, [...messages, historyEntry]);
   await tabSession.save(tabId);
 
+  activeByTab.get(tabId)?.controller.abort();
+  const controller = new AbortController();
+  activeByTab.set(tabId, { requestId, controller });
+
   safeSendRuntimeMessage({ type: "chat-start", tabId, requestId });
 
-  const { text, usage } = await aiService.streamChatReply({
-    modelId: model.modelId,
-    systemPrompt: prompt,
-    context: compactChatContext(context),
-    messages,
-    userMessage,
-    onDelta(textDelta) {
-      safeSendRuntimeMessage({ type: "chat-delta", tabId, requestId, text: textDelta });
-    },
-  });
+  try {
+    const { text, usage } = await aiService.streamChatReply({
+      modelId: model.modelId,
+      systemPrompt: prompt,
+      context: compactChatContext(context),
+      messages,
+      userMessage,
+      signal: controller.signal,
+      onDelta(textDelta) {
+        safeSendRuntimeMessage({ type: "chat-delta", tabId, requestId, text: textDelta });
+      },
+    });
 
-  tabSession.setHistory(tabId, [...messages, historyEntry, { role: "assistant", text }]);
-  await tabSession.save(tabId);
+    tabSession.setHistory(tabId, [...messages, historyEntry, { role: "assistant", text }]);
+    await tabSession.save(tabId);
 
-  safeSendRuntimeMessage({
-    type: "chat-complete",
-    tabId,
-    requestId,
-    usage,
-    costUsd: estimateCostUsd(usage, model.pricing),
-  });
+    safeSendRuntimeMessage({
+      type: "chat-complete",
+      tabId,
+      requestId,
+      usage,
+      costUsd: estimateCostUsd(usage, model.pricing),
+    });
+  } finally {
+    if (activeByTab.get(tabId)?.controller === controller) {
+      activeByTab.delete(tabId);
+    }
+  }
 }
 
 async function updateChatContext(tabId, updates) {
@@ -457,13 +457,4 @@ function sumUsage(firstUsage, secondUsage) {
 function getSaveTarget(result) {
   if (result.verdict !== "found" || !result.matches.length) return null;
   return { mode: "update", pageId: result.matches[0].id };
-}
-
-function messageForcesFullAnalysis(requestId, signal) {
-  for (const entry of activeByTab.values()) {
-    if (entry.requestId === requestId && entry.controller.signal === signal) {
-      return Boolean(entry.forceFullAnalysis);
-    }
-  }
-  return false;
 }

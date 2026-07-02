@@ -89,10 +89,6 @@ export function createNotionService({
     return mapJob(data);
   }
 
-  async function updateJobStatus(pageId, status) {
-    return updateJob(pageId, { status });
-  }
-
   async function trashJob(pageId) {
     await request(`/pages/${pageId}`, {
       method: "PATCH",
@@ -107,7 +103,6 @@ export function createNotionService({
     queryAllJobs,
     createJob,
     updateJob,
-    updateJobStatus,
     trashJob,
   };
 }
