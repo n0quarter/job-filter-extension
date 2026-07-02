@@ -243,7 +243,7 @@ function buildDuplicateCheckPrompt({ page, jobs }) {
 
 function buildJobAnalysisPrompt(page) {
   return [
-    "Analyze this job opportunity for Viktor. Start directly with the analysis — no title heading.",
+    "Analyze this job opportunity for the user. Start directly with the analysis — no title heading.",
     `Title: ${page.title || ""}`,
     `URL: ${page.url || ""}`,
     "",
