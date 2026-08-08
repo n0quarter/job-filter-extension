@@ -3,7 +3,7 @@ node_modules/
 *.pem
 credentials
 .scripts/
-config/prompt.local.md
+config/*.local.md
 CLAUDE.md
 AGENTS.md
 data

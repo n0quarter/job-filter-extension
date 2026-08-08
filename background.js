@@ -8,7 +8,18 @@ import { createTabSession } from "./tab-session.js";
 
 const MAX_PAGE_TEXT_LENGTH = 200000;
 const SIDE_PANEL_PATH = "sidepanel.html";
-const PROMPT_PATHS = ["config/prompt.local.md", "config/prompt.example.md"];
+const PROMPT_CONFIGS = [
+  {
+    context: "config/job-search-context.local.md",
+    instructions: "config/extension-instructions.local.md",
+    private: true,
+  },
+  {
+    context: "config/job-search-context.example.md",
+    instructions: "config/extension-instructions.example.md",
+    private: false,
+  },
+];
 
 const activeByTab = new Map();
 const tabSession = createTabSession();
@@ -164,10 +175,20 @@ async function saveToNotion(tabId, status, saveTarget, draftFromMessage) {
 }
 
 async function analyzePage(tabId, modelKey, requestId, signal, forceFullAnalysis) {
+  let tab;
+  let pageText;
+
   try {
     sendAnalysisMessage(tabId, requestId, { type: "progress", text: "⏳ Reading page…" });
-    const tab = await chrome.tabs.get(tabId);
-    const pageText = (await readPageText(tabId, tab.url)).slice(0, MAX_PAGE_TEXT_LENGTH);
+    tab = await chrome.tabs.get(tabId);
+    pageText = (await readPageText(tabId, tab.url)).slice(0, MAX_PAGE_TEXT_LENGTH);
+  } catch (err) {
+    if (signal.aborted || !isActive(tabId, requestId)) return;
+    sendAnalysisMessage(tabId, requestId, { type: "error", error: "Failed to read page: " + err.message });
+    return;
+  }
+
+  try {
     await tabSession.initContext(tabId, {
       page: { title: tab.title || "", url: tab.url || "", text: pageText },
       notionJobs: [],
@@ -194,7 +215,7 @@ async function analyzePage(tabId, modelKey, requestId, signal, forceFullAnalysis
     await comparePageAgainstNotion(tabId, tab, pageText, jobs, modelKey, requestId, signal, prompt, forceFullAnalysis);
   } catch (err) {
     if (signal.aborted || !isActive(tabId, requestId)) return;
-    sendAnalysisMessage(tabId, requestId, { type: "error", error: "Failed to read page: " + err.message });
+    sendAnalysisMessage(tabId, requestId, { type: "error", error: "Analysis failed: " + err.message });
   }
 }
 
@@ -433,14 +454,36 @@ async function createNotionServiceFromStorage() {
 
 async function getAnalysisPrompt() {
   if (analysisPrompt) return analysisPrompt;
-  for (const promptPath of PROMPT_PATHS) {
-    const response = await fetch(chrome.runtime.getURL(promptPath));
-    if (response.ok) {
-      analysisPrompt = await response.text();
+
+  for (const config of PROMPT_CONFIGS) {
+    const [context, instructions] = await Promise.all([
+      readPromptFile(config.context),
+      readPromptFile(config.instructions),
+    ]);
+
+    if (context && instructions) {
+      analysisPrompt = `${context.trim()}\n\n---\n\n${instructions.trim()}\n`;
       return analysisPrompt;
     }
+
+    if (config.private && (context || instructions)) {
+      throw new Error(
+        `Private prompt configuration is incomplete. Add both ${config.context} and ${config.instructions}.`
+      );
+    }
   }
-  throw new Error("Analysis prompt not found. Add config/prompt.local.md or keep config/prompt.example.md.");
+
+  throw new Error("Analysis prompt files not found.");
+}
+
+async function readPromptFile(path) {
+  try {
+    const response = await fetch(chrome.runtime.getURL(path));
+    return response.ok ? response.text() : null;
+  } catch (err) {
+    console.log(`ℹ️ Prompt file unavailable: ${path} (${err.message})`);
+    return null;
+  }
 }
 
 function sumUsage(firstUsage, secondUsage) {
